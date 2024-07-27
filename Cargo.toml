@@ -1,0 +1,28 @@
+[package]
+name = "keyage"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+age = { version = "0.10.0", features = ["armor"] }
+clap = { version = "4.5.8", features = ["derive"] }
+clap-verbosity-flag = "2.2.0"
+confy = "0.6.1"
+dirs = "5.0.1"
+git2 = "0.19.0"
+glob = "0.3.1"
+inquire = "0.7.5"
+owo-colors = "4.0.0"
+passwords = "3.1.16"
+qrcode = { version = "0.14.1", features = [] }
+serde = { version = "1.0.203", features = ["derive"] }
+serde_derive = "1.0.203"
+termtree = "0.5.1"
+thiserror = "1.0.61"
+totp-rs = { version = "5.6.0", features = ["otpauth", "gen_secret"] }
+tracing = "0.1.40"
+tracing-log = "0.2.0"
+tracing-subscriber = "0.3.18"
+tracing-test = "0.2.5"

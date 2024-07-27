@@ -1,0 +1,4 @@
+A password store that uses age encryption. Takes a lot of inspiration from Pass.
+
+Maintainers:
+- Jitze Lindeboom <jitze@lndbm.net>
