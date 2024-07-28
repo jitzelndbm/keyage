@@ -21,96 +21,36 @@
     nixvim,
     crane,
     ...
-  }:
+  }: let
+    buildKeyage = pkgs: let
+      craneLib = crane.mkLib pkgs;
+      markdownFilter = path: _type: builtins.match ".*md$" path != null;
+      txtFilter = path: _type: builtins.match ".*txt$" path != null;
+      sumFilter = path: type:
+        (markdownFilter path type)
+        || (txtFilter path type)
+        || (craneLib.filterCargoSources path type);
+    in
+      craneLib.buildPackage {
+        src = nixpkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = sumFilter;
+          name = "source";
+        };
+
+        nativeBuildInputs = with pkgs; [pkg-config];
+        buildInputs = with pkgs; [openssl];
+      };
+  in
     utils.lib.eachDefaultSystem
     (
       system: let
         pkgs = import nixpkgs {inherit system;};
-        inherit (nixpkgs) lib;
-        craneLib = crane.mkLib pkgs;
         toolchain = pkgs.rustPlatform;
-        markdownFilter = path: _type: builtins.match ".*md$" path != null;
-        txtFilter = path: _type: builtins.match ".*txt$" path != null;
-        sumFilter = path: type:
-          (markdownFilter path type)
-          || (txtFilter path type)
-          || (craneLib.filterCargoSources path type);
-
-        keyageApplication = craneLib.buildPackage {
-          src = lib.cleanSourceWith {
-            src = ./.;
-            filter = sumFilter;
-            name = "source";
-          };
-
-          preBuild = ''
-            echo "Contents of src directory:"
-            tree
-          '';
-
-          nativeBuildInputs = with pkgs; [
-            tree
-            pkg-config
-            openssl
-          ];
-
-          buildInputs = with pkgs; [
-            pkg-config
-            tree
-            openssl
-          ];
-        };
       in rec
       {
-        homeManagerModules.keyage = {
-          config,
-          lib,
-          pkgs,
-          ...
-        }:
-          with lib; let
-            cfg = config.programs.keyage;
-            tomlFormat = pkgs.formats.toml {};
-          in {
-            options.programs.keyage = {
-              enable = mkEnableOption "keyage";
-              package = mkOption {
-                type = types.package;
-                default = keyageApplication;
-              };
-              storePath = mkOption {
-                type = types.path;
-                default = literalExpression ''"${config.xdg.dataHome}/keyage-store"'';
-                example = literalExpression ''"${config.home.homeDirectory}/.keyage-store"'';
-                description = "This is where the password store will be initialized.";
-              };
-              settings = mkOption {
-                type = tomlFormat.type;
-                default = {};
-                example = literalExpression ''
-                  {
-                    identifier = "${config.xdg.configHome}/sops/age/keys.txt"
-                  }
-                '';
-                description = ''
-                  Settings for the configuration file which will be embedded into the store.
-                '';
-              };
-            };
-
-            config = {
-              home.packages = [cfg.package];
-              home.sessionVariables = {
-                KEYAGE_STORE = cfg.storePath;
-              };
-              home.file."${cfg.storePath}/config.toml".source = mkIf (cfg.settings != null) {
-                source = tomlFormat.generate "keyage" cfg.settings;
-              };
-            };
-          };
-
         # Executed by `nix build`
-        packages.default = keyageApplication;
+        packages.default = buildKeyage pkgs;
 
         # Executed by `nix run`
         apps.default = utils.lib.mkApp {drv = packages.default;};
@@ -139,27 +79,11 @@
         in
           pkgs.mkShell {
             buildInputs = [
-              (with pkgs;
-                with toolchain; [
-                  cargo
-                  rustc
-                  rustLibSrc
-                ])
-
-              (with pkgs; [
-                rust-analyzer
-                clippy
-                rustfmt
-                bacon
-
-                pkg-config
-                openssl
-              ])
-
+              (with pkgs; with toolchain; [cargo rustc rustLibSrc])
+              (with pkgs; [rust-analyzer clippy rustfmt bacon openssl])
               nvim
             ];
-
-            nativeBuildInputs = with pkgs; [pkg-config openssl];
+            nativeBuildInputs = with pkgs; [pkg-config];
 
             shellHook = "exec $SHELL";
 
@@ -168,5 +92,55 @@
             PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
           };
       }
-    );
+    )
+    // {
+      homeManagerModules.keyage = {
+        config,
+        lib,
+        pkgs,
+        ...
+      }:
+        with lib; let
+          cfg = config.programs.keyage;
+          tomlFormat = pkgs.formats.toml {};
+        in {
+          options.programs.keyage = {
+            enable = mkEnableOption "keyage";
+            package = mkOption {
+              type = types.package;
+              default = buildKeyage pkgs;
+            };
+            storePath = mkOption {
+              type = types.path;
+              default = "${config.xdg.dataHome}/keyage-store";
+              example = literalExpression ''"${config.home.homeDirectory}/.keyage-store"'';
+              description = "This is where the password store will be initialized.";
+            };
+            settings = mkOption {
+              type = tomlFormat.type;
+              default = {};
+              example = literalExpression ''
+                {
+                  identifier = "${config.xdg.configHome}/sops/age/keys.txt"
+                }
+              '';
+              description = ''
+                Settings for the configuration file which will be embedded into the store.
+              '';
+            };
+          };
+
+          config = {
+            home.packages = [cfg.package];
+
+            home.sessionVariables = {
+              KEYAGE_STORE = toString cfg.storePath;
+            };
+
+            home.file."${cfg.storePath}/config.toml" = {
+              source = tomlFormat.generate "config.toml" cfg.settings;
+            };
+          };
+        };
+    };
 }
