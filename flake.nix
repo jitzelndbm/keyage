@@ -35,10 +35,8 @@
           (markdownFilter path type)
           || (txtFilter path type)
           || (craneLib.filterCargoSources path type);
-      in rec
-      {
-        # Executed by `nix build`
-        packages.default = craneLib.buildPackage {
+
+        keyageApplication = craneLib.buildPackage {
           src = lib.cleanSourceWith {
             src = ./.;
             filter = sumFilter;
@@ -62,17 +60,57 @@
             openssl
           ];
         };
-        #toolchain.buildRustPackage {
-        #  pname = "keyage";
-        #  version = "0.1.0";
-        #  src = self;
-        #  cargoLock.lockFile = ./Cargo.lock;
+      in rec
+      {
+        homeManagerModules.keyage = {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+          with lib; let
+            cfg = config.programs.keyage;
+            tomlFormat = pkgs.formats.toml {};
+          in {
+            options.programs.keyage = {
+              enable = mkEnableOption "keyage";
+              package = mkOption {
+                type = types.package;
+                default = keyageApplication;
+              };
+              storePath = mkOption {
+                type = types.path;
+                default = literalExpression ''"${config.xdg.dataHome}/keyage-store"'';
+                example = literalExpression ''"${config.home.homeDirectory}/.keyage-store"'';
+                description = "This is where the password store will be initialized.";
+              };
+              settings = mkOption {
+                type = tomlFormat.type;
+                default = {};
+                example = literalExpression ''
+                  {
+                    identifier = "${config.xdg.configHome}/sops/age/keys.txt"
+                  }
+                '';
+                description = ''
+                  Settings for the configuration file which will be embedded into the store.
+                '';
+              };
+            };
 
-        #  PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+            config = {
+              home.packages = [cfg.package];
+              home.sessionVariables = {
+                KEYAGE_STORE = cfg.storePath;
+              };
+              home.file."${cfg.storePath}/config.toml".source = mkIf (cfg.settings != null) {
+                source = tomlFormat.generate "keyage" cfg.settings;
+              };
+            };
+          };
 
-        #  # For other makeRustPlatform features see:
-        #  # https://github.com/NixOS/nixpkgs/blob/master/doc/languages-frameworks/rust.section.md#cargo-features-cargo-features
-        #};
+        # Executed by `nix build`
+        packages.default = keyageApplication;
 
         # Executed by `nix run`
         apps.default = utils.lib.mkApp {drv = packages.default;};
