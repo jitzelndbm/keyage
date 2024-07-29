@@ -122,6 +122,7 @@
               example = literalExpression ''
                 {
                   identifier = "${config.xdg.configHome}/sops/age/keys.txt"
+                  recipient = "age1somethingsomethingyougetthepoint"
                 }
               '';
               description = ''

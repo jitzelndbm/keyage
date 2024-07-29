@@ -4,9 +4,13 @@ use std::{
     io::{Read, Write},
     iter,
     path::PathBuf,
+    str::FromStr,
 };
 
-use age::{Encryptor, IdentityFile, IdentityFileEntry};
+use age::{
+    cli_common::{read_identities, StdinGuard},
+    Encryptor, Recipient,
+};
 use serde_derive::{Deserialize, Serialize};
 mod error;
 
@@ -21,11 +25,15 @@ pub type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Configuration {
     pub identifier: Option<String>,
+    pub recipient: Option<String>,
 }
 
 impl ::std::default::Default for Configuration {
     fn default() -> Self {
-        Self { identifier: None }
+        Self {
+            identifier: None,
+            recipient: None,
+        }
     }
 }
 
@@ -33,7 +41,8 @@ impl ::std::default::Default for Configuration {
 
 pub struct Store {
     pub root_path: PathBuf,
-    pub identity: age::x25519::Identity,
+    pub identity_file_path: String,
+    pub recipient_file_path: String,
     //TODO: repository: Repository,
 }
 
@@ -41,6 +50,18 @@ impl Store {
     pub const CONFIG_FILE_NAME: &'static str = "config.toml";
     pub const STORE_DIR_VAR_NAME: &'static str = "KEYAGE_STORE";
     pub const DEFAULT_STORE_DIR_NAME: &'static str = "keyage-store";
+
+    fn get_recipient(&self) -> Result<Box<dyn Recipient + Send>> {
+        if let Ok(ssh_recipient) = age::ssh::Recipient::from_str(&self.recipient_file_path) {
+            Ok(Box::new(ssh_recipient))
+        } else if let Ok(x25519_recipient) =
+            age::x25519::Recipient::from_str(&self.recipient_file_path)
+        {
+            Ok(Box::new(x25519_recipient))
+        } else {
+            Err("Invalid recipient format".into())
+        }
+    }
 
     /// Get the default store, with a provided configuration file in the root of the store
     pub fn get() -> Result<Self> {
@@ -54,24 +75,20 @@ impl Store {
         let configuration_path = root_path.join(Self::CONFIG_FILE_NAME);
         let configuration: Configuration = confy::load_path(configuration_path)?;
 
-        let identity = match IdentityFile::from_file(configuration.identifier.ok_or(Error::Todo)?)?
-            .into_identities()
-            .first()
-            .ok_or(Error::Todo)?
-        {
-            IdentityFileEntry::Native(n) => n.clone(),
-        };
+        let recipient_file_path = configuration.recipient.ok_or(Error::Todo)?;
+        let identity_file_path = configuration.identifier.ok_or(Error::Todo)?;
 
         Ok(Self {
             root_path,
-            identity,
+            identity_file_path,
+            recipient_file_path,
         })
     }
 
     /// Encrypt a given string with the identity provided in the config
     pub fn encrypt(&self, text: impl Into<String>) -> Result<Vec<u8>> {
-        let recipient = self.identity.to_public();
-        let encryptor = Encryptor::with_recipients(vec![Box::new(recipient)]).ok_or(Error::Todo)?;
+        let encryptor =
+            Encryptor::with_recipients(vec![self.get_recipient()?]).ok_or(Error::Todo)?;
 
         let mut encrypted = Vec::new();
         let mut writer = encryptor.wrap_output(&mut encrypted)?;
@@ -89,8 +106,17 @@ impl Store {
             _ => unreachable!(),
         };
 
+        // Get the identity
+        let identities = read_identities(
+            vec![self.identity_file_path.clone()],
+            None,
+            &mut StdinGuard::new(false),
+        )?;
+
+        let identity = identities.first().ok_or(Error::Todo)?;
+
         let mut decrypted = vec![];
-        let mut reader = decryptor.decrypt(iter::once(&self.identity as &dyn age::Identity))?;
+        let mut reader = decryptor.decrypt(iter::once(identity.as_ref()))?;
         reader.read_to_end(&mut decrypted)?;
 
         Ok(decrypted)
@@ -160,7 +186,6 @@ impl Store {
     pub fn valid_path_in_store(&self, path: PathBuf) -> Result<bool> {
         Ok(self
             .prepare_path(path)
-            .canonicalize()?
             .starts_with(self.root_path.canonicalize()?))
     }
 
