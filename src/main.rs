@@ -1,13 +1,9 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use inquire::{Confirm, Password};
 use qrcode::{render::unicode, QrCode};
-use termtree::Tree;
 use totp_rs::TOTP;
 use tracing_log::AsTrace;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -35,9 +31,6 @@ struct Cli {
 enum Commands {
     /// Initialize the keyage store directory (uses KEYAGE_STORE variable)
     Initialize { path_to_secret_key: PathBuf },
-
-    /// List all the passwords in the store
-    List,
 
     /// Add a password to the password store
     Insert {
@@ -105,7 +98,6 @@ fn main() -> Result<()> {
     subscriber.init();
 
     match cli.command {
-        Commands::List {} => list()?,
         Commands::Remove { path, force } => remove(path, force)?,
         Commands::Initialize { path_to_secret_key } => initialize(path_to_secret_key)?,
         Commands::Insert { path, force } => insert(path, force)?,
@@ -122,37 +114,8 @@ fn main() -> Result<()> {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////// HELPERS ////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-fn label<P: AsRef<Path>>(p: P) -> String {
-    p.as_ref().file_name().unwrap().to_str().unwrap().to_owned()
-}
-fn tree<P: AsRef<Path>>(p: P) -> Result<Tree<String>> {
-    let result = fs::read_dir(&p)?.filter_map(|e| e.ok()).fold(
-        Tree::new(label(p.as_ref().canonicalize()?)),
-        |mut root, entry| {
-            let dir = entry.metadata().unwrap();
-            if dir.is_dir() {
-                root.push(tree(entry.path()).unwrap());
-            } else {
-                root.push(Tree::new(label(entry.path())));
-            }
-            root
-        },
-    );
-
-    Ok(result)
-}
-
-////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////// COMMANDS ///////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
-fn list() -> Result<()> {
-    let store = Store::get()?;
-    print!("{}", tree(store.root_path)?);
-    Ok(())
-}
-
 fn show(path: PathBuf, qr: bool, otp: bool) -> Result<()> {
     let store = Store::get()?;
 
