@@ -1,14 +1,15 @@
-use std::path::PathBuf;
+use std::{io::stderr, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use inquire::{Confirm, Password};
 use qrcode::{render::unicode, QrCode};
 use totp_rs::TOTP;
-use tracing_log::AsTrace;
-use tracing_subscriber::util::SubscriberInitExt;
 
-use keyage::{Error, Result, Store};
+use keyage::{
+    error::{default_error_handler, Error, Result},
+    Store,
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////// CLAP /////////////////////////////////////
@@ -86,28 +87,22 @@ enum Commands {
 ///////////////////////////////////// MAIN /////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    colog::init();
 
-    let subscriber = tracing_subscriber::fmt()
-        .with_line_number(false)
-        .with_target(false)
-        .without_time()
-        .with_max_level(cli.verbose.log_level_filter().as_trace())
-        .finish();
-
-    subscriber.init();
-
-    match cli.command {
-        Commands::Remove { path, force } => remove(path, force)?,
-        Commands::Initialize { path_to_secret_key } => initialize(path_to_secret_key)?,
-        Commands::Insert { path, force } => insert(path, force)?,
+    // TODO: add error handler, from "linked" project
+    if let Err(e) = match Cli::parse().command {
+        Commands::Remove { path, force } => remove(path, force),
+        Commands::Initialize { path_to_secret_key } => initialize(path_to_secret_key),
+        Commands::Insert { path, force } => insert(path, force),
         Commands::Generate {
             path,
             length,
             no_symbols,
             force,
-        } => generate(path, length, no_symbols, force)?,
-        Commands::Show { qr, otp, path } => show(path, qr, otp)?,
+        } => generate(path, length, no_symbols, force),
+        Commands::Show { qr, otp, path } => show(path, qr, otp),
+    } {
+        default_error_handler(&e, &mut stderr().lock())
     };
 
     Ok(())
@@ -120,19 +115,26 @@ fn show(path: PathBuf, qr: bool, otp: bool) -> Result<()> {
     let store = Store::get()?;
 
     if !store.is_password_in_store(path.clone())? {
-        return Err(Error::Todo.into());
+        return Err(Error::PasswordNotFound);
     }
 
     let encrypted = store.get_store_contents(path)?;
     let mut decrypted = store.decrypt(encrypted)?;
 
     if otp {
-        let totp = TOTP::from_url_unchecked(String::from_utf8(decrypted)?)?;
-        decrypted = totp.generate_current()?.into();
+        let totp = TOTP::from_url_unchecked(
+            String::from_utf8(decrypted).map_err(|e| Error::Totp(e.to_string()))?,
+        )
+        .map_err(|e| Error::Totp(e.to_string()))?;
+
+        decrypted = totp
+            .generate_current()
+            .map_err(|e| Error::Totp(e.to_string()))?
+            .into();
     }
 
     if qr {
-        let code = QrCode::new(decrypted)?;
+        let code = QrCode::new(decrypted).map_err(|e| Error::Qr(e.to_string()))?;
         let s = code
             .render::<unicode::Dense1x2>()
             .light_color(unicode::Dense1x2::Light)
@@ -141,7 +143,8 @@ fn show(path: PathBuf, qr: bool, otp: bool) -> Result<()> {
 
         print!("{s}");
     } else {
-        let password = String::from_utf8(decrypted)?;
+        let password =
+            String::from_utf8(decrypted).map_err(|e| Error::StringConversion(e.to_string()))?;
         println!("{password}");
     };
 
@@ -150,7 +153,9 @@ fn show(path: PathBuf, qr: bool, otp: bool) -> Result<()> {
 
 fn generate(path: PathBuf, length: usize, no_symbols: bool, force: bool) -> Result<()> {
     if length < 8 {
-        return Err(Error::Todo.into());
+        return Err(Error::PasswordGeneration(
+            "The length of the password must be at least 8".to_string(),
+        ));
     }
 
     let store = Store::get()?;
@@ -158,10 +163,12 @@ fn generate(path: PathBuf, length: usize, no_symbols: bool, force: bool) -> Resu
     let full_path = store.prepare_path(path.clone());
 
     if full_path.exists() && !force {
-        return Err(Error::Todo.into());
+        return Err(Error::StoreWrite(
+            "Password already exists and force mode is not enabled".to_string(),
+        ));
     }
 
-    let pg = passwords::PasswordGenerator {
+    let password = passwords::PasswordGenerator {
         length,
         numbers: true,
         lowercase_letters: true,
@@ -170,9 +177,9 @@ fn generate(path: PathBuf, length: usize, no_symbols: bool, force: bool) -> Resu
         exclude_similar_characters: true,
         strict: true,
         spaces: false,
-    };
-
-    let password = pg.generate_one()?;
+    }
+    .generate_one()
+    .map_err(|_| Error::PasswordGeneration("Internal error".to_string()))?;
     let encrypted = store.encrypt(password.clone())?;
     store.update_content(path, encrypted)?;
 
@@ -185,13 +192,16 @@ fn insert(path: PathBuf, force: bool) -> Result<()> {
     let store = Store::get()?;
 
     if store.is_password_in_store(path.clone())? && !force {
-        return Err(Error::Todo.into());
+        return Err(Error::StoreWrite(
+            "Password already exists and force mode is not enabled".to_string(),
+        ));
     }
 
     let password = Password::new("Enter a password:")
         .with_display_toggle_enabled()
         .with_display_mode(inquire::PasswordDisplayMode::Masked)
-        .prompt()?;
+        .prompt()
+        .map_err(|e| Error::Prompt(e.to_string()))?;
 
     let encrypted = store.encrypt(password)?;
     store.update_content(path, encrypted)?;
@@ -203,11 +213,11 @@ fn initialize(_path_to_secret_key: PathBuf) -> Result<()> {
     todo!();
 }
 
-fn remove(path: PathBuf, _force: bool) -> keyage::Result<()> {
+fn remove(path: PathBuf, _force: bool) -> Result<()> {
     let store = Store::get()?;
 
     if !store.valid_path_in_store(path.clone())? {
-        return Err(Error::Todo.into());
+        return Err(Error::PasswordNotFound);
     }
 
     // Now get the confirmation from the user, then remove the password
@@ -219,7 +229,8 @@ fn remove(path: PathBuf, _force: bool) -> keyage::Result<()> {
         .as_str(),
     )
     .with_default(false)
-    .prompt()?
+    .prompt()
+    .map_err(|e| Error::Prompt(e.to_string()))?
     {
         store.remove_from_store(path)?;
     }

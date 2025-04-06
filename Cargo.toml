@@ -7,10 +7,12 @@ edition = "2024"
 age = { version = "0.10.0", default-features = false, features = ["armor", "ssh", "cli-common", "plugin"] }
 clap = { version = "4.5.8", features = ["derive"] }
 clap-verbosity-flag = "2.2.0"
+colog = "1.3.0"
 confy = "0.6.1"
 dirs = "5.0.1"
 glob = "0.3.1"
 inquire = "0.7.5"
+log = "0.4.27"
 owo-colors = "4.0.0"
 passwords = "3.1.16"
 qrcode = { version = "0.14.1", features = [] }
@@ -18,7 +20,3 @@ serde = { version = "1.0.203", features = ["derive"] }
 serde_derive = "1.0.203"
 thiserror = "1.0.61"
 totp-rs = { version = "5.6.0", features = ["otpauth", "gen_secret"] }
-tracing = "0.1.40"
-tracing-log = "0.2.0"
-tracing-subscriber = "0.3.18"
-tracing-test = "0.2.5"

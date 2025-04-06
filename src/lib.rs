@@ -1,3 +1,5 @@
+use crate::error::{Error, Result};
+
 use std::{
     env,
     fs::{self},
@@ -11,14 +13,10 @@ use age::{
     cli_common::{read_identities, StdinGuard},
     Encryptor, Recipient,
 };
+use log::{debug, info, trace};
 use serde_derive::{Deserialize, Serialize};
-mod error;
 
-// Re export Error, because it is often used in the binary
-pub use crate::error::Error;
-
-/// This result type makes sure that appropriate error messages are printed, in the right format.
-pub type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
+pub mod error;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -43,7 +41,8 @@ pub struct Store {
     pub root_path: PathBuf,
     pub identity_file_path: String,
     pub recipient_file_path: String,
-    //TODO: repository: Repository,
+    // TODO: Git integration
+    // TODO: repository: Repository,
 }
 
 impl Store {
@@ -59,7 +58,7 @@ impl Store {
         {
             Ok(Box::new(x25519_recipient))
         } else {
-            Err("Invalid recipient format".into())
+            Err(Error::InvalidRecipientFormat)
         }
     }
 
@@ -68,15 +67,23 @@ impl Store {
         let root_path = match env::var(Self::STORE_DIR_VAR_NAME).ok() {
             Some(d) => PathBuf::from(d),
             None => dirs::data_local_dir()
-                .ok_or(Error::Todo)?
+                .ok_or(Error::StoreNotFound(
+                    "The path to the local data dir could not be found".to_string(),
+                ))?
                 .join(Self::DEFAULT_STORE_DIR_NAME),
         };
+        debug!("Found store path: {0}", root_path.display());
 
         let configuration_path = root_path.join(Self::CONFIG_FILE_NAME);
-        let configuration: Configuration = confy::load_path(configuration_path)?;
+        let configuration: Configuration =
+            confy::load_path(configuration_path).map_err(|e| Error::ConfigLoad(e.to_string()))?;
 
-        let recipient_file_path = configuration.recipient.ok_or(Error::Todo)?;
-        let identity_file_path = configuration.identifier.ok_or(Error::Todo)?;
+        let recipient_file_path = configuration
+            .recipient
+            .ok_or(Error::ConfigLoad("Invalid recipient field".to_string()))?;
+        let identity_file_path = configuration
+            .identifier
+            .ok_or(Error::ConfigLoad("Invalid identity field".to_string()))?;
 
         Ok(Self {
             root_path,
@@ -88,12 +95,16 @@ impl Store {
     /// Encrypt a given string with the identity provided in the config
     pub fn encrypt(&self, text: impl Into<String>) -> Result<Vec<u8>> {
         let encryptor =
-            Encryptor::with_recipients(vec![self.get_recipient()?]).ok_or(Error::Todo)?;
+            Encryptor::with_recipients(vec![self.get_recipient()?]).ok_or(Error::AgeEncryption)?;
 
         let mut encrypted = Vec::new();
-        let mut writer = encryptor.wrap_output(&mut encrypted)?;
-        writer.write_all(text.into().as_bytes())?;
-        writer.finish()?;
+        let mut writer = encryptor
+            .wrap_output(&mut encrypted)
+            .map_err(|_| Error::AgeEncryption)?;
+        writer
+            .write_all(text.into().as_bytes())
+            .map_err(|_| Error::AgeEncryption)?;
+        writer.finish().map_err(|_| Error::AgeEncryption)?;
 
         Ok(encrypted)
     }
@@ -101,23 +112,29 @@ impl Store {
     /// Decrypt encrypted bytes with the identity provided in the config
     pub fn decrypt(&self, encrypted: Vec<u8>) -> Result<Vec<u8>> {
         let mut encrypted = encrypted.as_slice();
-        let decryptor = match age::Decryptor::new(&mut encrypted)? {
-            age::Decryptor::Recipients(d) => d,
-            _ => unreachable!(),
-        };
+        let decryptor =
+            match age::Decryptor::new(&mut encrypted).map_err(|_| Error::AgeDecryption)? {
+                age::Decryptor::Recipients(d) => d,
+                _ => unreachable!(),
+            };
 
         // Get the identity
         let identities = read_identities(
             vec![self.identity_file_path.clone()],
             None,
             &mut StdinGuard::new(false),
-        )?;
+        )
+        .map_err(|_| Error::AgeDecryption)?;
 
-        let identity = identities.first().ok_or(Error::Todo)?;
+        let identity = identities.first().ok_or(Error::AgeDecryption)?;
 
         let mut decrypted = vec![];
-        let mut reader = decryptor.decrypt(iter::once(identity.as_ref()))?;
-        reader.read_to_end(&mut decrypted)?;
+        let mut reader = decryptor
+            .decrypt(iter::once(identity.as_ref()))
+            .map_err(|_| Error::AgeDecryption)?;
+        reader
+            .read_to_end(&mut decrypted)
+            .map_err(|_| Error::AgeDecryption)?;
 
         Ok(decrypted)
     }
@@ -134,10 +151,15 @@ impl Store {
         let pw_path = self.prepare_path(path);
 
         if !pw_path.exists() {
-            return Err(Error::Todo.into());
+            return Err(Error::StoreNotFound(
+                pw_path
+                    .to_str()
+                    .expect("String conversion error")
+                    .to_string(),
+            ));
         }
 
-        Ok(fs::read(pw_path)?)
+        Ok(fs::read(pw_path).map_err(|e| Error::StoreRead(e.to_string()))?)
     }
 
     /// This method forcefully updates the store content under path
@@ -151,8 +173,16 @@ impl Store {
     /// - This is also true for the underlying directories. It's basically `mkdir -p`
     pub fn update_content(&self, path: PathBuf, encrypted: impl Into<Vec<u8>>) -> Result<()> {
         let pw_path = self.prepare_path(path);
-        fs::create_dir_all(pw_path.parent().ok_or(Error::Todo)?)?;
-        fs::write(pw_path, encrypted.into())?;
+
+        fs::create_dir_all(
+            pw_path
+                .parent()
+                .ok_or(Error::StoreNotFound("/".to_string()))?,
+        )
+        .map_err(|e| Error::StoreWrite(e.to_string()))?;
+
+        fs::write(pw_path, encrypted.into()).map_err(|e| Error::StoreWrite(e.to_string()))?;
+
         Ok(())
     }
 
@@ -162,11 +192,13 @@ impl Store {
     /// - path: relative path to the store root, so "example/test", not "/home/..." etc.
     pub fn remove_from_store(&self, path: PathBuf) -> Result<()> {
         let full_path = self.prepare_path(path);
+
         if full_path.is_dir() {
-            fs::remove_dir_all(full_path)?
+            fs::remove_dir_all(full_path)
         } else {
-            fs::remove_file(full_path)?
-        };
+            fs::remove_file(full_path)
+        }
+        .map_err(|e| Error::StoreWrite(e.to_string()))?;
 
         Ok(())
     }
@@ -177,16 +209,25 @@ impl Store {
         if path.is_dir() {
             return path;
         }
-        path.set_extension("age");
+        if let Some(ex) = path.extension() {
+            if ex != "age" {
+                path.set_extension(ex.to_str().unwrap().to_owned() + ".age");
+            }
+        } else {
+            path.set_extension("age");
+        };
+        trace!("prepare path result: {0}", path.display());
         path
     }
 
     /// Function accepts a relative path to the store, and returns whether or not the path is
     /// valid (dir or age file), and in the store
     pub fn valid_path_in_store(&self, path: PathBuf) -> Result<bool> {
-        Ok(self
-            .prepare_path(path)
-            .starts_with(self.root_path.canonicalize()?))
+        Ok(self.prepare_path(path).starts_with(
+            self.root_path
+                .canonicalize()
+                .map_err(|e| Error::InvalidPath(e.to_string()))?,
+        ))
     }
 
     /// Function accepts a relative path, and returns whether the path is a valid age file in the
