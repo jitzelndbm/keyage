@@ -28,8 +28,61 @@
       );
     in
     {
+      homeManagerModules.keyage =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        with lib;
+        let
+          cfg = config.programs.keyage;
+          tomlFormat = pkgs.formats.toml { };
+        in
+        {
+          options.programs.keyage = {
+            enable = mkEnableOption "keyage";
+            package = mkOption {
+              type = types.package;
+              default = buildKeyage pkgs;
+            };
+            storePath = mkOption {
+              type = types.path;
+              default = "${config.xdg.dataHome}/keyage-store";
+              example = literalExpression ''"${config.home.homeDirectory}/.keyage-store"'';
+              description = "This is where the password store will be initialized.";
+            };
+            settings = mkOption {
+              type = tomlFormat.type;
+              default = { };
+              example = literalExpression ''
+                {
+                  identifier = "${config.xdg.configHome}/sops/age/keys.txt"
+                  recipient = "age1somethingsomethingyougetthepoint"
+                }
+              '';
+              description = ''
+                Settings for the configuration file which will be embedded into the store.
+              '';
+            };
+          };
+
+          config = {
+            home.packages = [ cfg.package ];
+
+            home.sessionVariables = {
+              KEYAGE_STORE = toString cfg.storePath;
+            };
+
+            home.file."${cfg.storePath}/config.toml" = {
+              source = tomlFormat.generate "config.toml" cfg.settings;
+            };
+          };
+        };
+
       packages = fa (system: {
-        keyage = self.${system}.packages.default;
+        keyage = self.packages.${system}.default;
         default = (import nixpkgs { inherit system; }).callPackage ./nix/keyage.nix { };
       });
 
