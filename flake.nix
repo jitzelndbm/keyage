@@ -45,7 +45,7 @@
             enable = mkEnableOption "keyage";
             package = mkOption {
               type = types.package;
-              default = buildKeyage pkgs;
+              default = pkgs.callPackage ./nix/keyage.nix { };
             };
             storePath = mkOption {
               type = types.path;
